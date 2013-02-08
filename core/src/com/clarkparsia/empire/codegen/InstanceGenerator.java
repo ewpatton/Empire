@@ -27,6 +27,7 @@ import javassist.Modifier;
 import javassist.CannotCompileException;
 import javassist.CtMethod;
 import javassist.CtPrimitiveType;
+import javassist.LoaderClassPath;
 import javassist.bytecode.ConstPool;
 import javassist.bytecode.AnnotationsAttribute;
 import javassist.bytecode.SignatureAttribute;
@@ -40,8 +41,6 @@ import java.util.Collection;
 import java.lang.reflect.Method;
 import java.lang.reflect.Type;
 
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
 import org.openrdf.model.Graph;
 
 import com.clarkparsia.empire.EmpireGenerated;
@@ -50,17 +49,20 @@ import com.clarkparsia.empire.EmpireOptions;
 import com.clarkparsia.empire.util.BeanReflectUtil;
 import com.clarkparsia.common.collect.Iterables2;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import sun.reflect.generics.reflectiveObjects.ParameterizedTypeImpl;
+import sun.reflect.generics.reflectiveObjects.WildcardTypeImpl;
 
 /**
  * <p>Generate implementations of interfaces at runtime via bytecode manipulation.</p>
  *
- * @author Michael Grove
- * @since 0.5.1
- * @version 0.7
+ * @author	Michael Grove
+ * @since	0.5.1
+ * @version 0.7.3
  */
 public final class InstanceGenerator {
-	private static final Logger LOGGER = LogManager.getLogger(BeanGenerator.class);
+	private static final Logger LOGGER = LoggerFactory.getLogger(BeanGenerator.class);
 
 	private static final Collection<Method> processedMethods = Sets.newHashSet();
 
@@ -88,6 +90,8 @@ public final class InstanceGenerator {
 		// TODO: can we use some sort of template language for this?
 
 		ClassPool aPool = ClassPool.getDefault();
+
+		aPool.appendClassPath(new LoaderClassPath(theInterface.getClassLoader()));
 
 		CtClass aInterface = aPool.get(theInterface.getName());
 		CtClass aSupportsRdfIdInterface = aPool.get(SupportsRdfId.class.getName());
@@ -132,10 +136,10 @@ public final class InstanceGenerator {
 		aClass.addField(aInterfaceField, CtField.Initializer.byExpr(theInterface.getName() + ".class;"));
 		
 		CtField aAllTriplesField = new CtField(aPool.get(Graph.class.getName()), "mAllTriples", aClass);
-		aClass.addField(aAllTriplesField, CtField.Initializer.byExpr("new com.clarkparsia.openrdf.ExtGraph();"));
+		aClass.addField(aAllTriplesField, CtField.Initializer.byExpr("new com.clarkparsia.openrdf.SetGraph();"));
 		
 		CtField aInstanceTriplesField = new CtField(aPool.get(Graph.class.getName()), "mInstanceTriples", aClass);
-		aClass.addField(aInstanceTriplesField, CtField.Initializer.byExpr("new com.clarkparsia.openrdf.ExtGraph();"));
+		aClass.addField(aInstanceTriplesField, CtField.Initializer.byExpr("new com.clarkparsia.openrdf.SetGraph();"));
 		
 		aClass.addConstructor(CtNewConstructor.defaultConstructor(aClass));
 		
@@ -170,22 +174,34 @@ public final class InstanceGenerator {
 			aClass.addMethod(CtNewMethod.make("public void setInstanceTriples(org.openrdf.model.Graph theGraph) { mInstanceTriples = theGraph; } ", aClass));
 		}		
 		
+		if (!hasMethod(aClass, "getInterfaceClass")) {
+			aClass.addMethod(CtNewMethod.make("public java.lang.Class getInterfaceClass() { return mInterfaceClass; }" , aClass ));
+		}
+		
 		String equalsMethodBody = 
 		  "public boolean equals(Object theObj) {\n" +
 		  "  if (theObj == this) return true;\n" +
 		  "  if (!(theObj instanceof com.clarkparsia.empire.SupportsRdfId)) return false;\n" +		  		  
 		  "  if (!(mInterfaceClass.isAssignableFrom(theObj.getClass()))) return false;\n" +
-		  "  return getRdfId().equals( ((com.clarkparsia.empire.SupportsRdfId) theObj).getRdfId());\n" +
+		  "  return getRdfId().equals( ((com.clarkparsia.empire.SupportsRdfId) theObj).getRdfId()) && super.equals(theObj);\n" +
 		  "}\n";
 		
 		aClass.addMethod(CtNewMethod.make(equalsMethodBody, aClass));
 
-		aClass.addMethod(CtNewMethod.make("public String toString() { return getRdfId() != null ? getRdfId().toString() : super.toString(); } ", aClass));
-		aClass.addMethod(CtNewMethod.make("public int hashCode() { return getRdfId() != null ? getRdfId().hashCode() : 0; } ", aClass));
+		if (theInterface.isInterface()) {
+			aClass.addMethod(CtNewMethod.make("public String toString() { return getRdfId() != null ? getRdfId().toString() : super.toString(); } ", aClass));
+			aClass.addMethod(CtNewMethod.make("public int hashCode() { return getRdfId() != null ? getRdfId().hashCode() : 0; } ", aClass));
+		}
 
 		aClass.freeze();
 
-		Class<T> aResult = (Class<T>) aClass.toClass();
+		Class<T> aResult = null;
+		try {
+			aResult = (Class<T>) aClass.toClass();
+		}
+		catch (CannotCompileException e) {
+			throw e;
+		}
 
 		try {
 			// make sure this is a valid class, that is, we can create instances of it!
@@ -472,7 +488,7 @@ public final class InstanceGenerator {
 	}
 
 	/**
-	 * Get the bean proeprties from the given class
+	 * Get the bean properties from the given class
 	 * @param thePool the class pool to use when creating new fields
 	 * @param theClass the class the new fields will belong to
 	 * @param theInterface the original bean class
@@ -509,39 +525,62 @@ public final class InstanceGenerator {
 				&& !aMethod.getName().startsWith("set")) {
 
 				if (EmpireOptions.STRICT_MODE) {
-					throw new IllegalArgumentException("Non-bean style methods found, implementations for them cannot not be generated");
+					throw new IllegalArgumentException("Non-bean style methods found '" + aMethod + "', implementations for them cannot not be generated");
 				}
 				else {
-					LOGGER.warn("Non-bean style methods found, implementations for them cannot not be generated : " + aMethod.getName() );
+					LOGGER.warn("Non-bean style methods found, implementations for them cannot not be generated : {}", aMethod.getName());
 				}
 			}
 
-			String aProp = aMethod.getName().substring(aMethod.getName().startsWith("is") ? 2 : 3);
+			Class aType = null;
+			Type generics = null;
 
-			aProp = String.valueOf(aProp.charAt(0)).toLowerCase() + aProp.substring(1);
+			if (aMethod.getName().startsWith("get") || aMethod.getName().startsWith("is") || aMethod.getName().startsWith("has")) {
+				aType = aMethod.getReturnType();
+				generics = aMethod.getGenericReturnType();
+			}
+			else if (aMethod.getName().startsWith("set") && aMethod.getParameterTypes().length > 0) {
+				aType = aMethod.getParameterTypes()[0];
 
-				Class aType = null;
-				Type generics = null;
-
-				if (aMethod.getName().startsWith("get") || aMethod.getName().startsWith("is") || aMethod.getName().startsWith("has")) {
-					aType = aMethod.getReturnType();
-					generics = aMethod.getGenericReturnType();
+				if (aMethod.getGenericParameterTypes() != null && aMethod.getGenericParameterTypes().length > 0) {
+					generics = aMethod.getGenericParameterTypes()[0];
 				}
-				else if (aMethod.getName().startsWith("set") && aMethod.getParameterTypes().length > 0) {
-					aType = aMethod.getParameterTypes()[0];
-
-					if (aMethod.getGenericParameterTypes() != null && aMethod.getGenericParameterTypes().length > 0) {
-						generics = aMethod.getGenericParameterTypes()[0];
-					}
-				}
+			}
 
 			if (aType != null) {
+				String aProp = aMethod.getName().substring(aMethod.getName().startsWith("is") ? 2 : 3);
+				aProp = String.valueOf(aProp.charAt(0)).toLowerCase() + aProp.substring(1);
+
 				CtField aNewField = new CtField(thePool.get(aType.getName()), aProp, theClass);
 
 				if (generics != null && generics instanceof ParameterizedTypeImpl) {
 					for (Type t : ((ParameterizedTypeImpl)generics).getActualTypeArguments()) {
+						String aFlag = "";
+						String aName;
 
-						aNewField.getFieldInfo().addAttribute(new SignatureAttribute(aNewField.getFieldInfo().getConstPool(), "L"+aType.getName().replace('.','/')+ "<L" + ((Class)t).getName().replace('.','/') + ";>;")) ;
+						if (t instanceof WildcardTypeImpl) {
+							WildcardTypeImpl aWildcard = (WildcardTypeImpl) t;
+							// trying to suss out super v extends w/o resorting to string munging.
+							if (aWildcard.getLowerBounds().length == 0 && aWildcard.getUpperBounds().length > 0) {
+								// no lower bounds afaik indicates ? extends Foo
+								aFlag = "+";
+								aName = ((Class)aWildcard.getUpperBounds()[0]).getName();
+							}
+							else if (aWildcard.getLowerBounds().length > 0) {
+								// lower & upper bounds I believe indicates something of the form Foo super Bar
+								aFlag = "-";
+								aName = ((Class)aWildcard.getLowerBounds()[0]).getName();
+							}
+							else {
+								throw new CannotCompileException("Unknown or unsupported type signature found: " + t);
+							}
+						}
+						else {
+							aName = ((Class)t).getName();
+						}
+
+
+						aNewField.getFieldInfo().addAttribute(new SignatureAttribute(aNewField.getFieldInfo().getConstPool(), "L"+aType.getName().replace('.','/')+ "<"+aFlag+"L" + aName.replace('.','/') + ";>;")) ;
 					}
 				}
 
@@ -582,8 +621,9 @@ public final class InstanceGenerator {
 			Class[] params2 = other.getParameterTypes();
 			if (params1.length == params2.length) {
 				for (int i = 0; i < params1.length; i++) {
-					if (params1[i] != params2[i])
+					if (params1[i] != params2[i]) {
 						return false;
+					}
 				}
 			}
 			

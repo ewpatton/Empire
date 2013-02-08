@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009-2010 Clark & Parsia, LLC. <http://www.clarkparsia.com>
+ * Copyright (c) 2009-2012 Clark & Parsia, LLC. <http://www.clarkparsia.com>
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -28,17 +28,14 @@ import org.openrdf.model.vocabulary.RDF;
 
 import org.openrdf.model.impl.ValueFactoryImpl;
 
+import org.openrdf.query.QueryLanguage;
 import org.openrdf.rio.RDFFormat;
 
 import org.openrdf.query.BindingSet;
 import org.openrdf.query.TupleQueryResult;
 
-import org.apache.log4j.LogManager;
-import org.apache.log4j.Logger;
-
 import com.clarkparsia.openrdf.ExtRepository;
-import com.clarkparsia.openrdf.OpenRdfUtil;
-import com.clarkparsia.openrdf.SesameQuery;
+
 import com.clarkparsia.openrdf.util.AdunaIterations;
 
 import com.clarkparsia.common.collect.MultiIterator;
@@ -53,6 +50,8 @@ import com.google.common.collect.Collections2;
 import com.google.common.collect.Sets;
 import com.google.common.collect.Iterators;
 import com.google.common.io.Files;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Collection;
 import java.util.Map;
@@ -70,15 +69,15 @@ import java.net.URL;
  * <p>Generate a set of Java beans which are compatible with Empire from a given RDF schema, OWL ontology, or blob
  * of RDF data.  The generated source code will map to the domain represented in the RDF.</p>
  *
- * @author Michael Grove
- * @since 0.5.1
- * @version 0.7
+ * @author	Michael Grove
+ * @since	0.5.1
+ * @version	0.7.3
  */
 public final class BeanGenerator {
 	/**
 	 * The logger
 	 */
-	private static final Logger LOGGER = LogManager.getLogger(BeanGenerator.class);
+	private static final Logger LOGGER = LoggerFactory.getLogger(BeanGenerator.class);
 
 	/**
 	 * String URI constant for the owl:Thing conccept
@@ -215,7 +214,7 @@ public final class BeanGenerator {
 		if (aRange == null) {
 			// no explicit range, try to infer it...
 			try {
-				TupleQueryResult aResults = theGraph.selectQuery(SesameQuery.serql("select distinct r from {s} <"+theProp+"> {o}, {o} rdf:type {r}"));
+				TupleQueryResult aResults = theGraph.selectQuery(QueryLanguage.SPARQL, "select distinct r from {s} <"+theProp+"> {o}, {o} rdf:type {r}");
 
 				if (aResults.hasNext()) {
 					URI aTempRange = (URI) aResults.next().getValue("r");
@@ -233,7 +232,7 @@ public final class BeanGenerator {
 				if (aRange == null) {
 					// could not get it from type usage, so maybe its a literal and we can guess it from datatype
 
-					aResults = theGraph.selectQuery(SesameQuery.serql("select distinct datatype(o) as dt from {s} <"+theProp+"> {o} where isLiteral(o)"));
+					aResults = theGraph.selectQuery(QueryLanguage.SPARQL, "select distinct datatype(o) as dt from {s} <"+theProp+"> {o} where isLiteral(o)");
 
 					if (aResults.hasNext()) {
 						URI aTempRange = null;
@@ -319,13 +318,13 @@ public final class BeanGenerator {
 	private static boolean isCollection(final ExtRepository theGraph, final URI theProp) throws Exception {
 		// TODO: this is not fool proof.
 
-		String aCardQuery = "select distinct card from " +
-					   "{s} rdf:type {owl:Restriction}, " +
-					   "{s} owl:onProperty {<"+theProp+">}, " +
-					   "{s} cardProp {card} " +
-					   "where cardProp = owl:cardinality or cardProp = owl:minCardinality or cardProp = owl:maxCardinality";
-
-		TupleQueryResult aResults = theGraph.selectQuery(SesameQuery.serql(aCardQuery));
+		String aCardQuery = "select distinct ?card where {\n" +
+					   "?s rdf:type owl:Restriction.\n" +
+					   "?s owl:onProperty <"+theProp+">.\n" +
+					   "?s ?cardProp ?card.\n" +
+					   "FILTER (?cardProp = owl:cardinality || ?cardProp = owl:minCardinality || ?cardProp = owl:maxCardinality)\n" +
+					   "}";
+			TupleQueryResult aResults = theGraph.selectQuery(QueryLanguage.SPARQL ,aCardQuery);
 		if (aResults.hasNext()) {
 			Literal aCard = (Literal) aResults.next().getValue("card") ;
 
@@ -340,7 +339,7 @@ public final class BeanGenerator {
 		aResults.close();
 
 		try {
-			aResults = theGraph.selectQuery(SesameQuery.serql("select distinct s from {s} <"+theProp+"> {o}"));
+			aResults = theGraph.selectQuery(QueryLanguage.SPARQL, "select distinct ?s where  { ?s <"+theProp+"> ?o}");
 			for (BindingSet aBinding : AdunaIterations.iterable(aResults)) {
 				Collection aCollection = Sets.newHashSet(theGraph.getValues( (Resource) aBinding.getValue("s"), theProp));
 				if (aCollection.size() > 1) {
@@ -466,7 +465,7 @@ public final class BeanGenerator {
 																						   new StatementToSubject())));
 
 			// infer properties based on usage in actual instance data
-			for (BindingSet aBinding : OpenRdfUtil.iterable(aRepository.selectQuery(SesameQuery.serql("select distinct p from {s} rdf:type {<" + aClass + ">}, {s} p {o}")))) {
+			for (BindingSet aBinding : AdunaIterations.iterable(aRepository.selectQuery(QueryLanguage.SPARQL, "select distinct ?p where { ?s rdf:type <" + aClass + ">}. ?s ?p ?o }"))) {
 				aProps.add( (URI) aBinding.getValue("p"));
 			}
 

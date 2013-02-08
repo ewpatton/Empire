@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009-2010 Clark & Parsia, LLC. <http://www.clarkparsia.com>
+ * Copyright (c) 2009-2012 Clark & Parsia, LLC. <http://www.clarkparsia.com>
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -21,7 +21,8 @@ import com.clarkparsia.empire.Empire;
 import com.clarkparsia.empire.util.EmpireUtil;
 import com.clarkparsia.empire.impl.serql.SerqlDialect;
 import com.clarkparsia.empire.impl.sparql.ARQSPARQLDialect;
-import com.clarkparsia.openrdf.ExtGraph;
+
+import com.clarkparsia.openrdf.Graphs;
 import com.google.common.collect.Collections2;
 import com.google.common.collect.Sets;
 import com.google.common.base.Function;
@@ -30,28 +31,31 @@ import org.openrdf.model.Resource;
 import org.openrdf.model.Graph;
 import org.openrdf.model.Value;
 import org.openrdf.model.BNode;
+import org.openrdf.model.vocabulary.RDF;
 
 import org.openrdf.query.BindingSet;
-import org.apache.log4j.Logger;
-import org.apache.log4j.LogManager;
+
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.util.Collection;
 
 /**
  * <p>Collection of utility methods for working with Empire DataSources</p>
  *
- * @author Michael Grove
+ * @author	Michael Grove
+ *
+ * @since	0.7
+ * @version	0.7.1
+ *
  * @see DataSource
  * @see TripleSource
- *
- * @version 0.7
- * @since 0.7
  */
 public final class DataSourceUtil {
 	/**
 	 * The logger
 	 */
-	private static final Logger LOGGER = LogManager.getLogger(Empire.class.getName());
+	private static final Logger LOGGER = LoggerFactory.getLogger(Empire.class.getName());
 
 	/**
 	 * No instances
@@ -88,11 +92,11 @@ public final class DataSourceUtil {
 	 * @return all the statements about the given object
 	 * @throws QueryException if there is an error while querying for the graph
 	 */
-	public static ExtGraph describe(DataSource theSource, Object theObj) throws QueryException {
+	public static Graph describe(DataSource theSource, Object theObj) throws QueryException {
 		String aNG = null;
 
 		if (EmpireUtil.asSupportsRdfId(theObj).getRdfId() == null) {
-			return new ExtGraph();
+			return Graphs.newGraph();
 		}
 
 		if (theSource instanceof SupportsNamedGraphs && EmpireUtil.hasNamedGraphSpecified(theObj)) {
@@ -110,7 +114,7 @@ public final class DataSourceUtil {
 		// bnode instabilty in queries will just yield either a parse error or incorrect query results because the bnode
 		// will get treated as a variable, and it will just grab the entire database, which is not what we want
 		if (aResource instanceof BNode && !(aDialect instanceof ARQSPARQLDialect)) {
-			return new ExtGraph();
+			return Graphs.newGraph();
 		}
 
 		// TODO: if source supports describe queries, use that.
@@ -134,7 +138,7 @@ public final class DataSourceUtil {
 			aGraph = theSource.graphQuery(aSPARQL);
 		}
 
-		return new ExtGraph(aGraph);
+		return aGraph;
 	}
 
 	/**
@@ -194,13 +198,19 @@ public final class DataSourceUtil {
 	 * @param theConcept the concept whose type to lookup
 	 * @return the rdf:type of the concept, or null if there is an error or one cannot be found.
 	 */
-	public static org.openrdf.model.URI getType(DataSource theSource, Resource theConcept) {
+	public static org.openrdf.model.Resource getType(DataSource theSource, Resource theConcept) {
 		if (theSource == null) {
 			return null;
 		}
 
 		try {
-			return new ExtGraph(describe(theSource, theConcept.toString())).getType(theConcept);
+			final Collection<Value> aTypes = getValues(theSource, theConcept, RDF.TYPE);
+			if (aTypes.isEmpty()) {
+				return null;
+			}
+			else {
+				return (Resource) aTypes.iterator().next();
+			}
 		}
 		catch (DataSourceException e) {
 			LOGGER.error("There was an error while getting the type of a resource", e);
