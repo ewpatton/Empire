@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009-2011 Clark & Parsia, LLC. <http://www.clarkparsia.com>
+ * Copyright (c) 2009-2012 Clark & Parsia, LLC. <http://www.clarkparsia.com>
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -15,6 +15,9 @@
 
 package com.clarkparsia.empire.annotation;
 
+import com.clarkparsia.openrdf.Graphs;
+import com.google.common.base.Optional;
+import com.google.common.collect.ObjectArrays;
 import org.openrdf.model.BNode;
 import org.openrdf.model.Literal;
 import org.openrdf.model.Resource;
@@ -22,7 +25,9 @@ import org.openrdf.model.Value;
 import org.openrdf.model.URI;
 import org.openrdf.model.ValueFactory;
 import org.openrdf.model.Statement;
+import org.openrdf.model.Graph;
 
+import org.openrdf.model.util.GraphUtil;
 import org.openrdf.model.vocabulary.RDF;
 import org.openrdf.model.vocabulary.XMLSchema;
 import org.openrdf.model.vocabulary.RDFS;
@@ -54,9 +59,6 @@ import java.net.URISyntaxException;
 
 import org.openrdf.model.impl.ValueFactoryImpl;
 
-import org.apache.log4j.Logger;
-import org.apache.log4j.LogManager;
-
 import com.clarkparsia.empire.ds.DataSource;
 import com.clarkparsia.empire.ds.DataSourceException;
 import com.clarkparsia.empire.ds.QueryException;
@@ -69,7 +71,6 @@ import com.clarkparsia.empire.Dialect;
 import com.clarkparsia.empire.annotation.runtime.Proxy;
 
 import com.clarkparsia.empire.impl.serql.SerqlDialect;
-import com.clarkparsia.empire.impl.sparql.ARQSPARQLDialect;
 
 import static com.clarkparsia.empire.util.BeanReflectUtil.set;
 import static com.clarkparsia.empire.util.BeanReflectUtil.setAccessible;
@@ -107,6 +108,10 @@ import javassist.util.proxy.MethodHandler;
 import javassist.util.proxy.ProxyObject;
 import javassist.util.proxy.MethodFilter;
 
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import sun.reflect.generics.reflectiveObjects.WildcardTypeImpl;
+
 /**
  * <p>Description: Utility for creating RDF from a compliant Java Bean, and for turning RDF (the results of a describe
  * on a given rdf:ID into a KB) into a Java bean.</p>
@@ -128,9 +133,9 @@ import javassist.util.proxy.MethodFilter;
  * Compliant classes must be annotated with the {@link Entity} JPA annotation, the {@link RdfsClass} annotation,
  * and must implement the {@link SupportsRdfId} interface.</p>
  *
- * @author Michael Grove
- * @since 0.1
- * @version 0.7
+ * @author	Michael Grove
+ * @since	0.1
+ * @version 0.7.3
  */
 public final class RdfGenerator {
 
@@ -146,7 +151,7 @@ public final class RdfGenerator {
 	/**
 	 * The logger
 	 */
-	private static final Logger LOGGER = LogManager.getLogger(RdfGenerator.class.getName());
+	private static final Logger LOGGER = LoggerFactory.getLogger(RdfGenerator.class.getName());
 
 	/**
 	 * Map from rdf:type URI's to the Java class which corresponds to that resource.
@@ -232,7 +237,11 @@ public final class RdfGenerator {
 		catch (ProvisionException ex) {
 			aObj = null;
 		}
-		LOGGER.debug("Tried to get instance of class : " + (System.currentTimeMillis()-start ) );
+
+		if (LOGGER.isDebugEnabled()) {
+			LOGGER.debug("Tried to get instance of class in {} ms ", (System.currentTimeMillis()-start ));
+		}
+
 		start = System.currentTimeMillis();
 
 		if (aObj == null) {
@@ -243,11 +252,17 @@ public final class RdfGenerator {
 				long istart = System.currentTimeMillis();
 				if (theClass.isInterface() || Modifier.isAbstract(theClass.getModifiers())) {		
 					aObj = com.clarkparsia.empire.codegen.InstanceGenerator.generateInstanceClass(theClass).newInstance();
-					LOGGER.debug("CodeGenerated instance in : " + (System.currentTimeMillis() - istart) + "ms. ");
+
+					if (LOGGER.isDebugEnabled()) {
+						LOGGER.debug("CodeGenerated instance in {} ms. ", (System.currentTimeMillis() - istart));
+					}
 				}
 				else {
 					aObj = theClass.newInstance();
-					LOGGER.debug("CodeGenerated instance in : " + (System.currentTimeMillis() - istart) + "ms. ");
+
+					if (LOGGER.isDebugEnabled()) {
+						LOGGER.debug("CodeGenerated instance in {} ms. ", (System.currentTimeMillis() - istart));
+					}
 				}
 			}
 			catch (InstantiationException e) {
@@ -259,13 +274,20 @@ public final class RdfGenerator {
 			catch (Exception e) {
 				throw new InvalidRdfException("Cannot create an instance of bean", e);
 			}
-			LOGGER.debug("Got reflect instance of class : " + (System.currentTimeMillis()-start ) );
-			start = System.currentTimeMillis();
 
+			if (LOGGER.isDebugEnabled()) {
+				LOGGER.debug("Got reflect instance of class {} ms ",  (System.currentTimeMillis()-start ) );
+			}
+
+			start = System.currentTimeMillis();
 		}
 
 		asSupportsRdfId(aObj).setRdfId(theId);
-		LOGGER.debug("Has rdfId : " + (System.currentTimeMillis()-start ) );
+
+		if (LOGGER.isDebugEnabled()) {
+			LOGGER.debug("Has rdfId {} ms", (System.currentTimeMillis()-start ));
+		}
+
 		start = System.currentTimeMillis();
 		
 		Class<T> aNewClass = determineClass(theClass, aObj, theSource);
@@ -294,18 +316,19 @@ public final class RdfGenerator {
     private static <T> Class<T> determineClass(Class<T> theOrigClass, T theObj, DataSource theSource) throws InvalidRdfException, DataSourceException {
 		Class aResult = theOrigClass;
 		final SupportsRdfId aTmpSupportsRdfId = asSupportsRdfId(theObj);
-	
-		ExtGraph aGraph = new ExtGraph(DataSourceUtil.describe(theSource, theObj));
+	 
+//		ExtGraph aGraph = new ExtGraph(DataSourceUtil.describe(theSource, theObj));
+		final Collection<Value> aTypes = DataSourceUtil.getValues(theSource, EmpireUtil.asResource(EmpireUtil.asSupportsRdfId(theObj)), RDF.TYPE);
 		
 		// right now, our best match is the original class (we will refine later)
 		
-		final Resource aTmpRes = EmpireUtil.asResource(aTmpSupportsRdfId);		
+//		final Resource aTmpRes = EmpireUtil.asResource(aTmpSupportsRdfId);
 				
 		// iterate for all rdf:type triples in the data
 		// There may be multiple rdf:type triples, which can then translate onto multiple candidate Java classes
 		// some of the Java classes may belong to the same class hierarchy, whereas others can have no common
 		// super class (other than java.lang.Object)
-		for (Value aValue : aGraph.getValues(aTmpRes, RDF.TYPE)) {
+		for (Value aValue : aTypes) {
 			if (!(aValue instanceof URI)) {
 				// there is no URI in the object position of rdf:type
 				// ignore that data
@@ -355,8 +378,10 @@ public final class RdfGenerator {
 	private synchronized static <T> T fromRdf(T theObj, DataSource theSource) throws InvalidRdfException, DataSourceException {
 		final SupportsRdfId aTmpSupportsRdfId = asSupportsRdfId(theObj);
 		final SupportsRdfId.RdfKey theKeyObj = aTmpSupportsRdfId.getRdfId();
-		
-		LOGGER.debug("Got obj : " + theObj );
+
+		if (LOGGER.isDebugEnabled()) {
+			LOGGER.debug("Converting {} to RDF.", theObj);
+		}
 		
 		if (OBJECT_M.containsKey(theKeyObj)) {
 			// TODO: this is probably a safe cast, i dont see how something w/ the same URI, which should be the same
@@ -368,7 +393,7 @@ public final class RdfGenerator {
 
 			OBJECT_M.put(theKeyObj, theObj);
 
-			ExtGraph aGraph = new ExtGraph(DataSourceUtil.describe(theSource, theObj));
+			Graph aGraph = DataSourceUtil.describe(theSource, theObj);
 
 			if (aGraph.size() == 0) {
 				return theObj;
@@ -477,7 +502,7 @@ public final class RdfGenerator {
 				
 				ToObjectFunction aFunc = new ToObjectFunction(theSource, aRes, aAccess, aProp);
 
-				Object aValue = aFunc.apply(aGraph.getValues(aRes, aProp));
+				Object aValue = aFunc.apply(GraphUtil.getObjects(aGraph, aRes, aProp));
 
 				boolean aOldAccess = aAccess.isAccessible();
 
@@ -498,7 +523,8 @@ public final class RdfGenerator {
 					// if something is specified to be an int in the java class, but it typed as a float (though down conversion
 					// in that case might work) the set call will fail.
 					// TODO: shouldnt this be an error?
-					LOGGER.warn("Probable type mismatch: " + aValue + " " + aAccess);
+
+					LOGGER.warn("Probable type mismatch: {} {}", aValue, aAccess);
 				}
 				catch (RuntimeException e) {
 					// TODO: i dont like keying on a RuntimeException here to get the error condition, but since the
@@ -514,7 +540,7 @@ public final class RdfGenerator {
 			}
 			
 			sIter = aGraph.match(aTmpRes, null, null);
-			ExtGraph aInstanceTriples = new ExtGraph();
+			Graph aInstanceTriples = Graphs.newGraph();
 
 			while (sIter.hasNext()) {
 				Statement aStmt = sIter.next();
@@ -681,29 +707,53 @@ public final class RdfGenerator {
 	 * @return the object represented as RDF triples
 	 * @throws InvalidRdfException thrown if the object cannot be transformed into RDF.
 	 */
-	public static ExtGraph asRdf(Object theObj) throws InvalidRdfException {
+	public static Graph asRdf(final Object theObj) throws InvalidRdfException {
 		if (theObj == null) {
 			return null;
 		}
 
-		RdfsClass aClass = asValidRdfClass(theObj);
+		Object aObj = theObj;
 
-		Resource aSubj = id(theObj);
+		if (aObj instanceof ProxyHandler) {
+			aObj = ((ProxyHandler)aObj).mProxy.value();
+		}
+		else {
+			try {
+				if (aObj.getClass().getDeclaredField("handler") != null) {
+					Field aProxy =  aObj.getClass().getDeclaredField("handler");
+					aObj = ((ProxyHandler)BeanReflectUtil.safeGet(aProxy, aObj)).mProxy.value();
+				}
+			}
+			catch (InvocationTargetException e) {
+				// this is probably an error, we know its a proxy object, but can't get the proxied object
+				throw new InvalidRdfException("Could not access proxy object", e);
+			}
+			catch (NoSuchFieldException e) {
+				// this is probably ok.
+			}
+		}
 
-		addNamespaces(theObj.getClass());
+		RdfsClass aClass = asValidRdfClass(aObj);
+
+		Resource aSubj = id(aObj);
+
+		addNamespaces(aObj.getClass());
 
 		GraphBuilder aBuilder = new GraphBuilder();
 
 		Collection<AccessibleObject> aAccessors = new HashSet<AccessibleObject>();
-		aAccessors.addAll(getAnnotatedFields(theObj.getClass()));
-		aAccessors.addAll(getAnnotatedGetters(theObj.getClass(), true));
+		aAccessors.addAll(getAnnotatedFields(aObj.getClass()));
+		aAccessors.addAll(getAnnotatedGetters(aObj.getClass(), true));
 
 		try {
 			ResourceBuilder aRes = aBuilder.instance(aBuilder.getValueFactory().createURI(PrefixMapping.GLOBAL.uri(aClass.value())),
 													 aSubj);
 
 			for (AccessibleObject aAccess : aAccessors) {
-				LOGGER.debug("Getting rdf for : " + aAccess.toString() );
+				if (LOGGER.isDebugEnabled()) {
+					LOGGER.debug("Getting rdf for : {}", aAccess);
+				}
+
 				AsValueFunction aFunc = new AsValueFunction(aAccess);
 
 				if (aAccess.isAnnotationPresent(Transient.class)
@@ -727,7 +777,7 @@ public final class RdfGenerator {
 				boolean aOldAccess = aAccess.isAccessible();
 				setAccessible(aAccess, true);
 
-				Object aValue = get(aAccess, theObj);
+				Object aValue = get(aAccess, aObj);
 
 				setAccessible(aAccess, aOldAccess);
 
@@ -736,7 +786,7 @@ public final class RdfGenerator {
 				}
 				else if (Collection.class.isAssignableFrom(aValue.getClass())) {
 					@SuppressWarnings("unchecked")
-					List<Value> aValueList = asList(aAccess, (Collection<Object>) Collection.class.cast(aValue));
+					List<Value> aValueList = asList(aAccess, (Collection<?>) Collection.class.cast(aValue));
 
 					if (aValueList.isEmpty()) {
 						continue;
@@ -776,12 +826,11 @@ public final class RdfGenerator {
 	 * @return the collection as a list of RDF values
 	 * @throws InvalidRdfException thrown if any of the values cannot be transformed
 	 */
-	private static List<Value> asList(AccessibleObject theAccess, Collection<Object> theCollection) throws InvalidRdfException {
+	private static List<Value> asList(AccessibleObject theAccess, Collection<?> theCollection) throws InvalidRdfException {
 		try {
 			return Lists.newArrayList(Collections2.transform(theCollection, new AsValueFunction(theAccess)));
 		}
 		catch (RuntimeException e) {
-			e.printStackTrace();
 			throw new InvalidRdfException(e.getMessage());
 		}
 	}
@@ -920,8 +969,13 @@ public final class RdfGenerator {
 							if (aListValue == null) {
 								throw new RuntimeException("Error converting a list value.");
 							}
-
-							aValues.add(aListValue);
+							
+							if (aListValue instanceof Collection) {
+								aValues.addAll(((Collection) aListValue));
+							}
+							else {
+								aValues.add(aListValue);
+							}
 						}
 
 						return aValues;
@@ -1011,7 +1065,7 @@ public final class RdfGenerator {
 				  : Locale.getDefault().toString());
 	}
 
-	private static Class refineClass(Object theAccessor, Class theClass, DataSource theSource, Resource theId) {
+	private static Class refineClass(final Object theAccessor, final Class theClass, final DataSource theSource, final Resource theId) {
 		Class aClass = theClass;
 
 		if (Collection.class.isAssignableFrom(aClass)) {
@@ -1030,7 +1084,41 @@ public final class RdfGenerator {
 			if (aTypes != null && aTypes.length >= 1) {
 				// first type argument to a collection is usually the one we care most about
 				if (aTypes[0] instanceof ParameterizedType && ((ParameterizedType)aTypes[0]).getActualTypeArguments().length > 0) {
-					aClass = (Class) ((ParameterizedType)aTypes[0]).getActualTypeArguments()[0];
+					Type aType = ((ParameterizedType)aTypes[0]).getActualTypeArguments()[0];
+
+					if (aType instanceof Class) {
+						aClass = (Class) aType;
+					}
+					else if (aType instanceof WildcardTypeImpl) {
+						WildcardTypeImpl aWildcard = (WildcardTypeImpl) aType;
+							// trying to suss out super v extends w/o resorting to string munging.
+							if (aWildcard.getLowerBounds().length == 0 && aWildcard.getUpperBounds().length > 0) {
+								// no lower bounds afaik indicates ? extends Foo
+								aClass = ((Class)aWildcard.getUpperBounds()[0]);
+							}
+							else if (aWildcard.getLowerBounds().length > 0) {
+								// lower & upper bounds I believe indicates something of the form Foo super Bar
+								aClass = ((Class)aWildcard.getLowerBounds()[0]);
+							}
+							else {
+								// shoot, we'll try the string hack that Adrian posted on the mailing list.
+								try {
+									aClass = Class.forName(aType.toString().split(" ")[2].substring(0, aTypes[0].toString().split(" ")[2].length()-1));
+								}
+								catch (Exception e) {
+									// everything has failed, let aClass be the default (theClass) and hope for the best
+								}
+							}
+					}
+					else {
+						// punt? wtf else could it be?
+						try {
+							aClass = Class.forName(aType.toString());
+						}
+						catch (ClassNotFoundException e) {
+							// oh well, we did the best we can
+						}
+					}
 				}
 				else if (aTypes[0] instanceof Class) {
 					aClass = (Class) aTypes[0];
@@ -1055,11 +1143,11 @@ public final class RdfGenerator {
 			// create an instance of that.  that will work, and pushes the likely failure back off to
 			// the assignment of the created instance
 
-			URI aType = DataSourceUtil.getType(theSource, theId);
+			Resource aType = DataSourceUtil.getType(theSource, theId);
 
 			// k, so now we know the type, if we can match the type to a class then we're in business
-			if (aType != null) {
-				for (Class aTypeClass : TYPE_TO_CLASS.get(aType)) {
+			if (aType != null && aType instanceof URI) {
+				for (Class aTypeClass : TYPE_TO_CLASS.get( (URI) aType)) {
 					if (BeanReflectUtil.hasAnnotation(aTypeClass, RdfsClass.class)) {
 						// lets try this one
 						aClass = aTypeClass;
@@ -1130,7 +1218,7 @@ public final class RdfGenerator {
 						return new java.net.URI(aLit.getLabel());
 					}
 					catch (URISyntaxException e) {
-						LOGGER.warn("URI syntax exception converting literal value which is not a valid URI: " + aLit.getLabel());
+						LOGGER.warn("URI syntax exception converting literal value which is not a valid URI {} ", aLit.getLabel());
 						return null;
 					}
 				}
@@ -1176,27 +1264,25 @@ public final class RdfGenerator {
 					try {
 						String aQuery = getBNodeConstructQuery(mSource, mResource, mProperty);
 						
-						ExtGraph aGraph = new ExtGraph(mSource.graphQuery(aQuery));
-						Resource aPossibleListHead = (Resource) aGraph.getValue(mResource, mProperty);
+						Graph aGraph = mSource.graphQuery(aQuery);
+
+						Optional<Resource> aPossibleListHead = Graphs.getResource(aGraph, mResource, mProperty);
 						
-						if (aGraph.isList(aPossibleListHead)) {
+						if (aPossibleListHead.isPresent() && Graphs.isList(aGraph, aPossibleListHead.get())) {
 							List<Value> aList;
 
-							// getting the list is only safe the the query dialect supports stable bnode ids in the query language, which is just 4store and Jena
-							// sesame does not support this.  I know this is a shitty hack to detect this, but it works.  Future work will add this detection as an
-							// interface to the dialect or as some sort of proeprty of the dialect, like dialect.supports(StableBNodeIds)
-							if (aPropAnnotation != null && aPropAnnotation.isList() && mSource.getQueryFactory().getDialect() instanceof ARQSPARQLDialect) {
+							// getting the list is only safe the the query dialect supports stable bnode ids in the query language.
+							if (aPropAnnotation != null && aPropAnnotation.isList() && mSource.getQueryFactory().getDialect().supportsStableBnodeIds()) {
 								try {
-									aList = asList(mSource, aPossibleListHead);
+									aList = asList(mSource, aPossibleListHead.get());
 								}
 								catch (DataSourceException e) {
 									throw new RuntimeException(e);
 								}
 							}
 							else {
-								aList = new ArrayList<Value>(aGraph.getValues(mResource, mProperty));
+								aList = new ArrayList<Value>(GraphUtil.getObjects(aGraph, mResource, mProperty));
 							}
-
 
 							//return new ToObjectFunction(mSource, null, (AccessibleObject) mAccessor, null).apply(aList);
 							Collection<Object> aValues = BeanReflectUtil.instantiateCollectionFromField(BeanReflectUtil.classFrom(aAccess));
@@ -1259,7 +1345,7 @@ public final class RdfGenerator {
 						throw new RuntimeException(e);
 					}
 					else {
-						LOGGER.warn("Problem applying value : " + e.toString() + ", " + e.getCause() );
+						LOGGER.warn("Problem applying value {}, {} ", e.toString(), e.getCause());
 						return null;
 					}
 				}
@@ -1269,7 +1355,7 @@ public final class RdfGenerator {
 					throw new RuntimeException("Unexpected Value type");
 				}
 				else {
-					LOGGER.warn("Problem applying value : Unexpected Value type" );
+					LOGGER.warn("Problem applying value : Unexpected Value type");
 					return null;
 				}
 			}
@@ -1277,7 +1363,7 @@ public final class RdfGenerator {
 	}
 
 	private static List<Value> asList(DataSource theSource, Resource theRes) throws DataSourceException {
-        List<Value> aList = new ArrayList<Value>();
+        List<Value> aList = Lists.newArrayList();
 
         Resource aListRes = theRes;
 
@@ -1313,12 +1399,19 @@ public final class RdfGenerator {
 			Proxy<T> aProxy = new Proxy<T>(theClass, asPrimaryKey(theKey), theSource);
 
 			ProxyFactory aFactory = new ProxyFactory();
-			aFactory.setSuperclass(theClass);
-			aFactory.setFilter(METHOD_FILTER);
-			
-			Object aObj = aFactory.createClass().newInstance();
+			aFactory.setInterfaces(ObjectArrays.concat(theClass.getInterfaces(), EmpireGenerated.class));
+			if (!theClass.isInterface()) {
+				aFactory.setSuperclass(theClass);
+			}
 
-			((ProxyObject) aObj).setHandler(new ProxyHandler<T>(aProxy));
+			aFactory.setFilter(METHOD_FILTER);
+			final ProxyHandler<T> aHandler = new ProxyHandler<T>(aProxy);
+
+			aFactory.setHandler(aHandler);
+
+			Object aObj = aFactory.createClass(METHOD_FILTER).newInstance();
+
+			((ProxyObject) aObj).setHandler(aHandler);
 			
 			//((com.clarkparsia.empire.annotation.RdfGenerator.ProxyHandler) ((javassist.util.proxy.ProxyObject) aObj).getHandler()).getProxy().getProxyClass();
 			
@@ -1356,16 +1449,14 @@ public final class RdfGenerator {
 		 * @inheritDoc
 		 */
 		public Object invoke(final Object theThis, final Method theMethod, final Method theProxyMethod, final Object[] theArgs) throws Throwable {
+
 			return theMethod.invoke(mProxy.value(), theArgs);
 		}
 	}
 	
 	private static String getBNodeConstructQuery(DataSource theSource, Resource theRes, URI theProperty) {
 		Dialect aDialect = theSource.getQueryFactory().getDialect();
-System.err.println(theRes + " " + theProperty);
-if (theRes == null && theProperty == null) {
-	int f = 0;
-}
+
 		String aSerqlQuery = "construct * from {" + aDialect.asQueryString(theRes) + "} <" + theProperty.toString() + "> {o}, {o} po {oo}";
 
 		String aSparqlQuery = "CONSTRUCT  { " + aDialect.asQueryString(theRes) + " <"+theProperty.toString()+"> ?o . ?o ?po ?oo  } \n" +

@@ -1,5 +1,5 @@
 /*
- * Copyright (c) 2009-2010 Clark & Parsia, LLC. <http://www.clarkparsia.com>
+ * Copyright (c) 2009-2012 Clark & Parsia, LLC. <http://www.clarkparsia.com>
  *
  * Licensed under the Apache License, Version 2.0 (the "License");
  * you may not use this file except in compliance with the License.
@@ -17,29 +17,32 @@ package com.clarkparsia.empire.test;
 
 import com.clarkparsia.empire.Empire;
 
+import com.clarkparsia.empire.jena.JenaEntityManagerTestSuite;
 import com.clarkparsia.empire.sesametwo.OpenRdfEmpireModule;
 import com.clarkparsia.empire.jena.JenaEmpireModule;
+import com.clarkparsia.empire.sesametwo.SesameEntityManagerTestSuite;
+import com.clarkparsia.empire.test.lazyload.TestLazyCollectionLoad;
 import com.clarkparsia.empire.util.DefaultEmpireModule;
 import com.clarkparsia.empire.test.util.TestModule;
+import com.clarkparsia.empire.test.codegen.CodegenTests;
 
 import org.junit.runners.Suite;
 
 import org.junit.runner.RunWith;
-import org.junit.runner.JUnitCore;
-import org.junit.runner.Result;
 
 import org.junit.BeforeClass;
-import org.junit.AfterClass;
 
 /**
  * <p>Empire test suite.</p>
  *
  * @author Michael Grove
- * @since 0.6.4
+ * @since 0.7
+ * @version 0.7.1
  */
 @RunWith(Suite.class)
-@Suite.SuiteClasses({TestRdfConvert.class, TestJPA.class, TestSPI.class, TestMisc.class,
-					 TestConfig.class, TestProxyFetchAndCascade.class, TestDS.class, TestTyping.class })
+@Suite.SuiteClasses({TestLazyCollectionLoad.class, TestRdfConvert.class, TestMisc.class,
+					 TestConfig.class, TestDS.class, CodegenTests.class,
+					 SesameEntityManagerTestSuite.class, JenaEntityManagerTestSuite.class})
 public class EmpireTestSuite {
 
 	@BeforeClass
@@ -53,7 +56,6 @@ public class EmpireTestSuite {
 		// TODO: tests for persistence injectors
 		// TODO: tests for transactions
 		// TODO: more failure tests -- badly annotated beans, misconfigured datasources, etc.
-		// TODO: 4store & sparql endpoint test configurations
 		// TODO: delegating data source tests
 		// TODO: named query tests
 	}
